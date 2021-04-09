@@ -14,22 +14,21 @@ University of Illinois ECE Department
 #include <stdio.h>
 #include <time.h>
 #include "aes.h"
-#include "system.h"
 
-// TODO: check c0 ~ 3 corresponds to correct position in i
-// (i = [c0, c1, c2, c3])
+struct chars {
+	unsigned char c0;
+	unsigned char c1;
+	unsigned char c2;
+	unsigned char c3;
+};
+
 union word_32 {
 	unsigned int i;
-	struct {
-		unsigned char c3;
-		unsigned char c2;
-		unsigned char c1;
-		unsigned char c0;
-	}chars;
+	struct chars charf;
 };
 
 // Pointer to base address of AES module, make sure it matches Qsys
-volatile unsigned int* AES_PTR = AES_BASE;
+volatile unsigned int* AES_PTR = (unsigned int *)0xc0;
 
 // Execution mode: 0 for testing, 1 for benchmarking
 int run_mode = 0;
@@ -73,147 +72,143 @@ char charsToHex(char c1, char c2)
 	return (hex1 << 4) + hex2;
 }
 
-// (4x 32-bit int array) <- (32x 8-bit char array (ASCII format))
-void asciiToUint(unsigned char* input, unsigned int* output) {
-	int i;
-	for (i = 0; i < 4; i++) {
+//Convert ASCII array to int array
+void intConversion(unsigned char* in, unsigned int* out) {
+
+	for (int i = 0; i < 4; i++) {
+
 		int j;
-		union word_32 word;
-		for (j = 0; j < 4; j++) {
-			int offset = (4 * i + j) * 2;
-			char currChar = charsToHex(input[offset], input[offset + 1]);
-			switch (j) {
-			case 0:
-				word.chars.c0 = currChar;
-				break;
-			case 1:
-				word.chars.c1 = currChar;
-				break;
-			case 2:
-				word.chars.c2 = currChar;
-				break;
-			default:
-				word.chars.c3 = currChar;
-			}
+		union word_32 currWord;
+
+		for (int j = 0; j < 4; j++) {
+
+			char currChar = charsToHex(in[(4*i+j)*2], in[(4*i+j)*2+1]);
+			if (j == 0)
+				currWord.charf.c0 = currChar;
+			else if (j==1)
+				currWord.charf.c1 = currChar;
+			else if (j==2)
+				currWord.charf.c2 = currChar;
+			else if (j==3)
+				currWord.charf.c3 = currChar;
+
 		}
-		output[i] = word.i;
+
+		out[i] = currWord.i;
+
 	}
+
 }
 
-// a, b 4x 32-bit int array
-// a <- a (bitwise XOR) b
+// a, b bitwise xor
 void aesXor(unsigned int* a, const unsigned int* b) {
-	int i;
-	for (i = 0; i < 4; i++) {
-		a[i] = a[i] ^ b[i];
-	}
+
+	for (int i = 0; i < 4; i++)
+		a[i] ^= b[i];
+
 }
 
-// perform subWord on inout (32-bit int)
-void subWord(unsigned int* inout) {
-	union word_32 word;
-	word.i = *inout;
-	word.chars.c0 = aes_sbox[word.chars.c0];
-	word.chars.c1 = aes_sbox[word.chars.c1];
-	word.chars.c2 = aes_sbox[word.chars.c2];
-	word.chars.c3 = aes_sbox[word.chars.c3];
-	*inout = word.i;
+void subWord(unsigned int* index) {
+
+	union word_32 currWord;
+	currWord.i = *index;
+	currWord.charf.c0 = aes_sbox[currWord.charf.c0];
+	currWord.charf.c1 = aes_sbox[currWord.charf.c1];
+	currWord.charf.c2 = aes_sbox[currWord.charf.c2];
+	currWord.charf.c3 = aes_sbox[currWord.charf.c3];
+	*index = currWord.i;
+
 }
 
-// perform subBytes on inout (4x 32-bit int array)
-void subBytes(unsigned int* inout) {
-	int i;
-	for (i = 0; i < 4; i++) {
-		subWord(inout + i);
-	}
+void subBytes(unsigned int* index) {
+
+	for (int i = 0; i < 4; i++)
+		subWord(index + i);
+
 }
 
-// perform shiftRows on inout (4x 32-bit int array)
-void shiftRows(unsigned int* inout) {
-	int i;
-	union word_32 word[4];
-	for (i = 0; i < 4; i++) {
-		word[i].i = inout[i];
-	}
+void Rotation(union word_32 *roword, int shift) {
+
 	char temp;
-	// row 1 - cyclical left-shift 1
-	temp = word[0].chars.c1;
-	word[0].chars.c1 = word[1].chars.c1;
-	word[1].chars.c1 = word[2].chars.c1;
-	word[2].chars.c1 = word[3].chars.c1;
-	word[3].chars.c1 = temp;
-
-	// row 2 - cyclical left-shift 2
-	temp = word[0].chars.c2;
-	word[0].chars.c2 = word[2].chars.c2;
-	word[2].chars.c2 = temp;
-	temp = word[1].chars.c2;
-	word[1].chars.c2 = word[3].chars.c2;
-	word[3].chars.c2 = temp;
-
-	// row 3 - cyclical left-shift 3 (same as right-shift 1)
-	temp = word[0].chars.c3;
-	word[0].chars.c3 = word[3].chars.c3;
-	word[3].chars.c3 = word[2].chars.c3;
-	word[2].chars.c3 = word[1].chars.c3;
-	word[1].chars.c3 = temp;
-
-	for (i = 0; i < 4; i++) {
-		inout[i] = word[i].i;
+	temp = roword[0].charf.c1;
+	if (shift == 2) {
+		roword[0].charf.c2 = roword[2].charf.c2;
+		roword[2].charf.c2 = temp;
+		temp = roword[1].charf.c2;
+		roword[1].charf.c2 = roword[3].charf.c2;
+		roword[3].charf.c2 = temp;
+	} else{
+		roword[0].charf.c1 = roword[shift].charf.c1;
+		roword[shift].charf.c1 = roword[shift*2%4].charf.c1;
+		roword[shift*2%4].charf.c1 = roword[shift*3%4].charf.c1;
+		roword[shift*3%4].charf.c1 = temp;
 	}
+
 }
 
-// perform mixColumns on inout (4x 32-bit int array)
-void mixColumns(unsigned int* inout) {
-	int i;
-	union word_32 newWord[4], oldWord[4];
-	for (i = 0; i < 4; i++) {
-		oldWord[i].i = inout[i];
-	}
+void shiftRows(unsigned int* index) {
 
-	for (i = 0; i < 4; i++) { // iterate through each col (word)
-		newWord[i].chars.c0 = gf_mul[oldWord[i].chars.c0][0] ^ gf_mul[oldWord[i].chars.c1][1] ^ oldWord[i].chars.c2 ^ oldWord[i].chars.c3;
-		newWord[i].chars.c1 = oldWord[i].chars.c0 ^ gf_mul[oldWord[i].chars.c1][0] ^ gf_mul[oldWord[i].chars.c2][1] ^ oldWord[i].chars.c3;
-		newWord[i].chars.c2 = oldWord[i].chars.c0 ^ oldWord[i].chars.c1 ^ gf_mul[oldWord[i].chars.c2][0] ^ gf_mul[oldWord[i].chars.c3][1];
-		newWord[i].chars.c3 = gf_mul[oldWord[i].chars.c0][1] ^ oldWord[i].chars.c1 ^ oldWord[i].chars.c2 ^ gf_mul[oldWord[i].chars.c3][0];
-	}
+	union word_32 roword[4];
+	for (int i = 0; i < 4; i++)
+		roword[i].i = index[i];
 
-	for (i = 0; i < 4; i++) {
-		inout[i] = newWord[i].i;
-	}
+	// row1
+	Rotation(roword, 1);
+	// row2
+	Rotation(roword, 2);
+	// row3
+	Rotation(roword, 3);
+
+	for (int i = 0; i < 4; i++)
+		index[i] = roword[i].i;
+
 }
 
-// perform keyExpansion on inout (4x 32-bit int array)
-// Idx is the Rcon idx (current iteration count)
-void keyExpansion(unsigned int* inout, int Idx) {
-	int i;
-	union word_32 oldWord[4], newWord[4];
-	for (i = 0; i < 4; i++) {
-		oldWord[i].i = inout[i];
-	}
-	for (i = 0; i < 4; i++) {
-		if (i) {
-			newWord[i].i = oldWord[i].i ^ newWord[i - 1].i;
-		}
-		else {
-			newWord[i].i = oldWord[3].i;
-			// rotWord
-			unsigned char temp = newWord[i].chars.c0;
-			newWord[i].chars.c0 = newWord[i].chars.c1;
-			newWord[i].chars.c1 = newWord[i].chars.c2;
-			newWord[i].chars.c2 = newWord[i].chars.c3;
-			newWord[i].chars.c3 = temp;
+// mixcolumns
+void mixColumns(unsigned int* index) {
 
-			//printf("%08x\n", newWord[i].i);
+	union word_32 newWord[4], currWord[4];
 
-			subWord(&(newWord[i].i));
-			newWord[i].i ^= Rcon[Idx];
-			newWord[i].i ^= oldWord[i].i;
-		}
+	for (int i = 0; i < 4; i++)
+		currWord[i].i = index[i];
+
+	for (int i = 0; i < 4; i++) { // iterate
+
+		newWord[i].charf.c0 = gf_mul[currWord[i].charf.c0][0] ^ gf_mul[currWord[i].charf.c1][1] ^ currWord[i].charf.c2 ^ currWord[i].charf.c3;
+		newWord[i].charf.c1 = currWord[i].charf.c0 ^ gf_mul[currWord[i].charf.c1][0] ^ gf_mul[currWord[i].charf.c2][1] ^ currWord[i].charf.c3;
+		newWord[i].charf.c2 = currWord[i].charf.c0 ^ currWord[i].charf.c1 ^ gf_mul[currWord[i].charf.c2][0] ^ gf_mul[currWord[i].charf.c3][1];
+		newWord[i].charf.c3 = gf_mul[currWord[i].charf.c0][1] ^ currWord[i].charf.c1 ^ currWord[i].charf.c2 ^ gf_mul[currWord[i].charf.c3][0];
+
 	}
-	for (i = 0; i < 4; i++) {
-		inout[i] = newWord[i].i;
-	}
+
+	for (int i = 0; i < 4; i++)
+		index[i] = newWord[i].i;
+}
+
+// perform keyExpansion on index
+void keyExpansion(unsigned int* index, int Idx) {
+
+	union word_32 currWord[4], newWord[4];
+	for (int i = 0; i < 4; i++)
+		currWord[i].i = index[i];
+
+	newWord[0].i = currWord[3].i;
+	unsigned char temp = newWord[0].charf.c0;
+	newWord[0].charf.c0 = newWord[0].charf.c1;
+	newWord[0].charf.c1 = newWord[0].charf.c2;
+	newWord[0].charf.c2 = newWord[0].charf.c3;
+	newWord[0].charf.c3 = temp;
+
+	subWord(&(newWord[0].i));
+	newWord[0].i ^= Rcon[Idx];
+	newWord[0].i ^= currWord[0].i;
+
+	for (int i = 1; i < 4; i++)
+		newWord[i].i = currWord[i].i ^ newWord[i - 1].i;
+
+	for (int i = 0; i < 4; i++)
+		index[i] = newWord[i].i;
+
 }
 
 /** encrypt
@@ -226,39 +221,31 @@ void keyExpansion(unsigned int* inout, int Idx) {
  */
 void encrypt(unsigned char* msg_ascii, unsigned char* key_ascii, unsigned int* msg_enc, unsigned int* key)
 {
-	// Implement this function
-	int i;
-	unsigned int aes_state[4], round_key[4];
-	asciiToUint(key_ascii, key);
-	asciiToUint(msg_ascii, aes_state);
 
-	// first add round key (cipher key itself)
-	aesXor(aes_state, key);
-	for (i = 0; i < 4; i++) {
+	unsigned int aes_msg[4], round_key[4];
+	intConversion(key_ascii, key);
+	intConversion(msg_ascii, aes_msg);
+
+	aesXor(aes_msg, key);
+	for (int i = 0; i < 4; i++)
 		round_key[i] = key[i];
-	}
 
-	// iteration starts
-	for (i = 1; i < 10; i++) {
-		subBytes(aes_state);
-		shiftRows(aes_state);
-		mixColumns(aes_state);
-//		for (int j = 0; j < 4; j++) {
-//			printf("%08x ", aes_state[j]);
-//		}
-//		printf("\n");
+	for (int i = 1; i < 10; i++) {
+		subBytes(aes_msg);
+		shiftRows(aes_msg);
+		mixColumns(aes_msg);
 		keyExpansion(round_key, i);
-		aesXor(aes_state, round_key);
+		aesXor(aes_msg, round_key);
 	}
 
-	subBytes(aes_state);
-	shiftRows(aes_state);
-	keyExpansion(round_key, i);
-	aesXor(aes_state, round_key);
+	subBytes(aes_msg);
+	shiftRows(aes_msg);
+	keyExpansion(round_key, 10);
+	aesXor(aes_msg, round_key);
 
-	for (i = 0; i < 4; i++) {
-		msg_enc[i] = aes_state[i];
-	}
+	for (int i = 0; i < 4; i++)
+		msg_enc[i] = aes_msg[i];
+
 }
 
 /** decrypt
